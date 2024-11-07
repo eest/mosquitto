@@ -58,6 +58,12 @@ openssl req -new -key client.key -out client.csr -config openssl.cnf -subj "${SB
 openssl ca -batch -config openssl.cnf -name CA_signing -out client.crt -infiles client.csr
 rm -f client.csr
 
+# Valid client key and certificate with empty subject and name in SAN.
+openssl genrsa -out client-san.key 2048
+openssl req -new -key client-san.key -out client-san.csr -config openssl.cnf -subj '/' -addext "subjectAltName = DNS:client.example.com"
+openssl ca -batch -config openssl.cnf -name CA_signing -out client-san.crt -infiles client-san.csr
+rm -f client-san.csr
+
 # Expired client certificate
 openssl genrsa -out client-expired.key 2048
 openssl req -new -key client-expired.key -out client-expired.csr -config openssl.cnf -subj "${SBASESUBJ}/CN=test client expired/"

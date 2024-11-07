@@ -224,6 +224,9 @@ struct mosquitto__listener {
 	char *dhparamfile;
 	bool use_identity_as_username;
 	bool use_subject_as_username;
+	bool use_san_as_username;
+	int use_san_as_username_index;
+	char *use_san_as_username_type;
 	bool require_certificate;
 	enum mosquitto__keyform tls_keyform;
 #endif

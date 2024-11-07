@@ -21,6 +21,7 @@ Contributors:
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <openssl/x509v3.h>
 
 #include "mosquitto_broker_internal.h"
 #include "memory_mosq.h"
@@ -1102,6 +1103,9 @@ int mosquitto_security_apply_default(void)
 	char *data_start;
 	size_t name_length;
 	char *subject;
+	STACK_OF(GENERAL_NAME) *san;
+	const GENERAL_NAME *nval;
+	int san_type_index = -1;
 #endif
 
 #ifdef WITH_TLS
@@ -1144,7 +1148,7 @@ int mosquitto_security_apply_default(void)
 
 		/* Check for connected clients that are no longer authorised */
 #ifdef WITH_TLS
-		if(context->listener && context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username)){
+		if(context->listener && context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username || context->listener->use_san_as_username)){
 			/* Client must have either a valid certificate, or valid PSK used as a username. */
 			if(!context->ssl){
 				if(context->protocol == mosq_p_mqtt5){
@@ -1218,7 +1222,7 @@ int mosquitto_security_apply_default(void)
 							continue;
 						}
 					}
-				} else { /* use_subject_as_username */
+				} else if (context->listener->use_subject_as_username){ /* use_subject_as_username */
 					subject_bio = BIO_new(BIO_s_mem());
 					X509_NAME_print_ex(subject_bio, X509_get_subject_name(client_cert), 0, XN_FLAG_RFC2253);
 					data_start = NULL;
@@ -1235,6 +1239,51 @@ int mosquitto_security_apply_default(void)
 					subject[name_length] = '\0';
 					BIO_free(subject_bio);
 					context->username = subject;
+				} else { /* use_san_as_username */
+					san = X509_get_ext_d2i(client_cert, NID_subject_alt_name, NULL, NULL);
+					if(!san) {
+						sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+						X509_free(client_cert);
+						client_cert = NULL;
+						security__disconnect_auth(context);
+						continue;
+					}
+					for(i=0; i<sk_GENERAL_NAME_num(san); i++){
+						nval = sk_GENERAL_NAME_value(san, i);
+						if(nval->type == GEN_DNS && strcmp(context->listener->use_san_as_username_type, "dns") == 0){
+							san_type_index++;
+							if (context->listener->use_san_as_username_index < san_type_index) {
+								sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+								X509_free(client_cert);
+								client_cert = NULL;
+								security__disconnect_auth(context);
+								continue;
+							}
+							if (context->listener->use_san_as_username_index == san_type_index) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+								context->username = mosquitto__strdup((char *) ASN1_STRING_data(nval->d.dNSName));
+#else
+								context->username = mosquitto__strdup((char *) ASN1_STRING_get0_data(nval->d.dNSName));
+#endif
+								if(!context->username){
+									sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+									X509_free(client_cert);
+									client_cert = NULL;
+									security__disconnect_auth(context);
+									continue;
+								}
+								/* Make sure there isn't an embedded NUL character in the DNS name */
+								if ((size_t)ASN1_STRING_length(nval->d.dNSName) != strlen(context->username)) {
+									sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+									X509_free(client_cert);
+									client_cert = NULL;
+									security__disconnect_auth(context);
+									continue;
+								}
+							}
+						}
+					}
+					sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
 				}
 				if(!context->username){
 					X509_free(client_cert);

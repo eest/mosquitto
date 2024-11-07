@@ -287,6 +287,7 @@ void config__cleanup(struct mosquitto__config *config)
 			mosquitto__free(config->listeners[i].tls_version);
 			mosquitto__free(config->listeners[i].tls_engine);
 			mosquitto__free(config->listeners[i].tls_engine_kpass_sha1);
+			mosquitto__free(config->listeners[i].use_san_as_username_type);
 #ifdef WITH_WEBSOCKETS
 			if(!config->listeners[i].ws_context) /* libwebsockets frees its own SSL_CTX */
 #endif
@@ -438,6 +439,9 @@ int config__parse_args(struct mosquitto__config *config, int argc, char *argv[])
 			|| config->default_listener.crlfile
 			|| config->default_listener.use_identity_as_username
 			|| config->default_listener.use_subject_as_username
+			|| config->default_listener.use_san_as_username
+			|| config->default_listener.use_san_as_username_index
+			|| config->default_listener.use_san_as_username_type
 #endif
 			|| config->default_listener.use_username_as_clientid
 			|| config->default_listener.host
@@ -503,6 +507,9 @@ int config__parse_args(struct mosquitto__config *config, int argc, char *argv[])
 		config->listeners[config->listener_count-1].crlfile = config->default_listener.crlfile;
 		config->listeners[config->listener_count-1].use_identity_as_username = config->default_listener.use_identity_as_username;
 		config->listeners[config->listener_count-1].use_subject_as_username = config->default_listener.use_subject_as_username;
+		config->listeners[config->listener_count-1].use_san_as_username = config->default_listener.use_san_as_username;
+		config->listeners[config->listener_count-1].use_san_as_username_index = config->default_listener.use_san_as_username_index;
+		config->listeners[config->listener_count-1].use_san_as_username_type = config->default_listener.use_san_as_username_type;
 #endif
 		config->listeners[config->listener_count-1].security_options.acl_file = config->default_listener.security_options.acl_file;
 		config->listeners[config->listener_count-1].security_options.password_file = config->default_listener.security_options.password_file;
@@ -2148,6 +2155,27 @@ static int config__read_file_core(struct mosquitto__config *config, bool reload,
 #ifdef WITH_TLS
 					if(reload) continue; /* Listeners not valid for reloading. */
 					if(conf__parse_bool(&token, "use_subject_as_username", &cur_listener->use_subject_as_username, saveptr)) return MOSQ_ERR_INVAL;
+#else
+					log__printf(NULL, MOSQ_LOG_WARNING, "Warning: TLS support not available.");
+#endif
+				}else if(!strcmp(token, "use_san_as_username")){
+#ifdef WITH_TLS
+					if(reload) continue; /* Listeners not valid for reloading. */
+					if(conf__parse_bool(&token, "use_san_as_username", &cur_listener->use_san_as_username, saveptr)) return MOSQ_ERR_INVAL;
+#else
+					log__printf(NULL, MOSQ_LOG_WARNING, "Warning: TLS support not available.");
+#endif
+				}else if(!strcmp(token, "use_san_as_username_type")){
+#ifdef WITH_TLS
+					if(reload) continue; /* Listeners not valid for reloading. */
+					if(conf__parse_string(&token, "use_san_as_username_type", &cur_listener->use_san_as_username_type, saveptr)) return MOSQ_ERR_INVAL;
+#else
+					log__printf(NULL, MOSQ_LOG_WARNING, "Warning: TLS support not available.");
+#endif
+				}else if(!strcmp(token, "use_san_as_username_index")){
+#ifdef WITH_TLS
+					if(reload) continue; /* Listeners not valid for reloading. */
+					if(conf__parse_int(&token, "use_san_as_username_index", &cur_listener->use_san_as_username_index, saveptr)) return MOSQ_ERR_INVAL;
 #else
 					log__printf(NULL, MOSQ_LOG_WARNING, "Warning: TLS support not available.");
 #endif

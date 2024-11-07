@@ -21,6 +21,7 @@ Contributors:
 #include <stdio.h>
 #include <string.h>
 #include <utlist.h>
+#include <openssl/x509v3.h>
 
 #include "mosquitto_broker_internal.h"
 #include "mqtt_protocol.h"
@@ -453,6 +454,9 @@ int handle__connect(struct mosquitto *context)
 	char *data_start;
 	long name_length;
 	char *subject;
+	STACK_OF(GENERAL_NAME) *san;
+	const GENERAL_NAME *nval;
+	int san_type_index = -1;
 #endif
 
 	G_CONNECTION_COUNT_INC();
@@ -721,7 +725,7 @@ int handle__connect(struct mosquitto *context)
 	client_id = NULL;
 
 #ifdef WITH_TLS
-	if(context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username)){
+	if(context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username || context->listener->use_san_as_username)){
 		/* Don't need the username or password if provided */
 		mosquitto__free(username);
 		username = NULL;
@@ -830,7 +834,7 @@ int handle__connect(struct mosquitto *context)
 						goto handle_connect_error;
 					}
 				}
-			} else { /* use_subject_as_username */
+			} else if (context->listener->use_subject_as_username) { /* use_subject_as_username */
 				subject_bio = BIO_new(BIO_s_mem());
 				X509_NAME_print_ex(subject_bio, X509_get_subject_name(client_cert), 0, XN_FLAG_RFC2253);
 				data_start = NULL;
@@ -845,11 +849,70 @@ int handle__connect(struct mosquitto *context)
 				subject[name_length] = '\0';
 				BIO_free(subject_bio);
 				context->username = subject;
+			} else { /* use_san_as_username */
+				san = X509_get_ext_d2i(client_cert, NID_subject_alt_name, NULL, NULL);
+                                if(!san) {
+					if(context->protocol == mosq_p_mqtt5){
+						send__connack(context, 0, MQTT_RC_BAD_USERNAME_OR_PASSWORD, NULL);
+					}else{
+						send__connack(context, 0, CONNACK_REFUSED_BAD_USERNAME_PASSWORD, NULL);
+					}
+					rc = MOSQ_ERR_AUTH;
+					sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+					goto handle_connect_error;
+				}
+				for(i=0; i<sk_GENERAL_NAME_num(san); i++){
+					nval = sk_GENERAL_NAME_value(san, i);
+					if(nval->type == GEN_DNS && strcmp(context->listener->use_san_as_username_type, "dns") == 0){
+						san_type_index++;
+						if (context->listener->use_san_as_username_index < san_type_index) {
+							if(context->protocol == mosq_p_mqtt5){
+								send__connack(context, 0, MQTT_RC_BAD_USERNAME_OR_PASSWORD, NULL);
+							}else{
+								send__connack(context, 0, CONNACK_REFUSED_BAD_USERNAME_PASSWORD, NULL);
+							}
+							rc = MOSQ_ERR_AUTH;
+							sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+							goto handle_connect_error;
+						}
+						if (context->listener->use_san_as_username_index == san_type_index) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+							context->username = mosquitto__strdup((char *) ASN1_STRING_data(nval->d.dNSName));
+#else
+							context->username = mosquitto__strdup((char *) ASN1_STRING_get0_data(nval->d.dNSName));
+#endif
+							if(!context->username){
+								if(context->protocol == mosq_p_mqtt5){
+									send__connack(context, 0, MQTT_RC_SERVER_UNAVAILABLE, NULL);
+								}else{
+									send__connack(context, 0, CONNACK_REFUSED_SERVER_UNAVAILABLE, NULL);
+								}
+								rc = MOSQ_ERR_NOMEM;
+								sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+								goto handle_connect_error;
+							}
+							/* Make sure there isn't an embedded NUL character in the DNS name */
+							if ((size_t)ASN1_STRING_length(nval->d.dNSName) != strlen(context->username)) {
+								log__printf(NULL, MOSQ_LOG_NOTICE, "use_san_as_username: checking for DNS null");
+								if(context->protocol == mosq_p_mqtt5){
+									send__connack(context, 0, MQTT_RC_BAD_USERNAME_OR_PASSWORD, NULL);
+								}else{
+									send__connack(context, 0, CONNACK_REFUSED_BAD_USERNAME_PASSWORD, NULL);
+								}
+								rc = MOSQ_ERR_AUTH;
+								sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
+								goto handle_connect_error;
+							}
+						}
+                                        }
+				}
+				sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
 			}
 			if(!context->username){
 				rc = MOSQ_ERR_AUTH;
 				goto handle_connect_error;
 			}
+			log__printf(NULL, MOSQ_LOG_NOTICE, "use_san_as_username: username is: %s", context->username);
 			X509_free(client_cert);
 			client_cert = NULL;
 #ifdef FINAL_WITH_TLS_PSK
@@ -922,7 +985,7 @@ int handle__connect(struct mosquitto *context)
 		}
 	}else{
 #ifdef WITH_TLS
-		if(context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username)){
+		if(context->listener->ssl_ctx && (context->listener->use_identity_as_username || context->listener->use_subject_as_username || context->listener->use_san_as_username)){
 			/* Authentication assumed to be cleared */
 		}else
 #endif

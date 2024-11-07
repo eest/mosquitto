@@ -372,6 +372,13 @@ static int listeners__start(void)
 			}
 #endif
 		}
+
+		if (db.config->listeners[i].use_san_as_username_type == NULL) {
+                        /* need to set string fields after configuration file
+                         * parsing otherwise it thinks the setting is
+                         * duplicated in the config */
+			db.config->listeners[i].use_san_as_username_type = mosquitto__strdup("dns");
+		}
 	}
 	if(listensock == NULL){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to start any listening sockets, exiting.");
